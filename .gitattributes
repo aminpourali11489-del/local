@@ -1,2 +1,666 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+import pygame
+import sys
+import math
+import random
+
+# Initialize pygame
+pygame.init()
+
+# Screen dimensions - vertical layout
+WIDTH, HEIGHT = 800, 1000
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Pixel Golf Adventure")
+
+# Colors
+GRASS_GREEN = (76, 175, 80)
+SAND_COLOR = (194, 178, 128)
+SPACE_COLOR = (10, 10, 40)
+BALL_COLOR = (255, 255, 255)
+HOLE_COLOR = (0, 0, 0)
+UI_BG = (50, 50, 50, 200)
+UI_BORDER = (100, 100, 100)
+TEXT_COLOR = (255, 255, 255)
+STAR_COLOR = (255, 255, 200)
+WINDMILL_COLOR = (200, 200, 200)
+CACTUS_COLOR = (0, 100, 0)
+ROCKET_COLOR = (150, 150, 160)
+TREE_COLOR = (0, 80, 0)
+
+# Game parameters
+FPS = 60
+GRAVITY = 0.2
+FRICTION = 0.98
+MIN_VELOCITY = 0.2
+
+# Font
+font = pygame.font.SysFont(None, 36)
+big_font = pygame.font.SysFont(None, 72)
+
+class Ball:
+    def __init__(self, x, y, radius=12):
+        self.x = x
+        self.y = y
+        self.radius = radius
+        self.vx = 0
+        self.vy = 0
+        self.hit = False
+        self.in_hazard = False
+        self.strokes = 0
+        self.wind_effect = 0
+    
+    def update(self, obstacles, hole, hazards, phase, windmills, cacti, rockets, trees):
+        # Apply wind effect if in phase 0 (grass)
+        if phase == 0 and windmills:
+            self.wind_effect = 0.05 * math.sin(pygame.time.get_ticks() / 200)
+            self.vx += self.wind_effect
+        
+        # Update position
+        self.x += self.vx
+        self.y += self.vy
+        
+        # Apply gravity based on phase
+        if phase == 2:  # Space phase - low gravity
+            self.vy += GRAVITY * 0.3
+        else:
+            self.vy += GRAVITY
+        
+        # Apply friction based on phase
+        if phase == 1:  # Desert phase - more friction
+            self.vx *= FRICTION * 0.95
+            self.vy *= FRICTION * 0.95
+        else:
+            self.vx *= FRICTION
+            self.vy *= FRICTION
+        
+        # Stop if velocity is too low
+        if abs(self.vx) < MIN_VELOCITY and abs(self.vy) < MIN_VELOCITY:
+            self.vx = 0
+            self.vy = 0
+        
+        # Check collision with obstacles
+        for obstacle in obstacles:
+            if self.collide_with_obstacle(obstacle):
+                # Simple bounce
+                self.vx *= -0.7
+                self.vy *= -0.7
+                
+                # Move ball outside obstacle
+                while self.collide_with_obstacle(obstacle):
+                    self.x += 1 if self.vx > 0 else -1
+                    self.y += 1 if self.vy > 0 else -1
+        
+        # Check collision with special objects
+        for cactus in cacti:
+            if self.collide_with_cactus(cactus):
+                self.vx *= -0.8
+                self.vy *= -0.8
+                
+        for rocket in rockets:
+            if self.collide_with_rocket(rocket):
+                self.vx *= -0.6
+                self.vy *= -0.6
+                
+        for tree in trees:
+            if self.collide_with_tree(tree):
+                self.vx *= -0.7
+                self.vy *= -0.7
+        
+        # Check if in hazard
+        self.in_hazard = False
+        for hazard in hazards:
+            if self.collide_with_hazard(hazard):
+                self.in_hazard = True
+                # Apply hazard effect based on phase
+                if phase == 0:  # Grass - water hazard
+                    self.vx *= 0.9
+                    self.vy *= 0.9
+                elif phase == 1:  # Desert - quicksand
+                    self.vx *= 0.8
+                    self.vy *= 0.8
+                elif phase == 2:  # Space - asteroid field
+                    self.vx *= 0.7
+                    self.vy *= 0.7
+                break
+        
+        # Check if ball is in the hole
+        dx = self.x - hole.x
+        dy = self.y - hole.y
+        distance = math.sqrt(dx*dx + dy*dy)
+        if distance < hole.radius + self.radius and abs(self.vx) < 1.5 and abs(self.vy) < 1.5:
+            return True  # Ball is in the hole
+        
+        # Boundary check
+        if self.x < self.radius:
+            self.x = self.radius
+            self.vx *= -0.7
+        elif self.x > WIDTH - self.radius:
+            self.x = WIDTH - self.radius
+            self.vx *= -0.7
+            
+        if self.y < self.radius:
+            self.y = self.radius
+            self.vy *= -0.7
+        elif self.y > HEIGHT - self.radius:
+            self.y = HEIGHT - self.radius
+            self.vy *= -0.7
+            
+        return False
+    
+    def draw(self, screen, phase):
+        # Draw different ball styles based on phase
+        if phase == 0:  # Grass
+            pygame.draw.circle(screen, BALL_COLOR, (int(self.x), int(self.y)), self.radius)
+            pygame.draw.circle(screen, (100, 100, 100), (int(self.x), int(self.y)), self.radius, 2)
+        elif phase == 1:  # Desert
+            pygame.draw.circle(screen, (240, 230, 140), (int(self.x), int(self.y)), self.radius)
+            pygame.draw.circle(screen, (180, 170, 100), (int(self.x), int(self.y)), self.radius, 2)
+        else:  # Space
+            pygame.draw.circle(screen, (200, 200, 255), (int(self.x), int(self.y)), self.radius)
+            pygame.draw.circle(screen, (150, 150, 200), (int(self.x), int(self.y)), self.radius, 2)
+    
+    def hit_ball(self, power, angle):
+        self.vx = power * math.cos(angle)
+        self.vy = power * math.sin(angle)
+        self.strokes += 1
+        self.hit = True
+    
+    def collide_with_obstacle(self, obstacle):
+        if obstacle["type"] == "rect":
+            rect = obstacle["rect"]
+            closest_x = max(rect.left, min(self.x, rect.right))
+            closest_y = max(rect.top, min(self.y, rect.bottom))
+            
+            dx = self.x - closest_x
+            dy = self.y - closest_y
+            
+            return (dx*dx + dy*dy) < (self.radius * self.radius)
+        
+        elif obstacle["type"] == "circle":
+            dx = self.x - obstacle["x"]
+            dy = self.y - obstacle["y"]
+            distance = math.sqrt(dx*dx + dy*dy)
+            return distance < (self.radius + obstacle["radius"])
+    
+    def collide_with_hazard(self, hazard):
+        if hazard["type"] == "rect":
+            rect = hazard["rect"]
+            return (rect.left <= self.x <= rect.right and 
+                    rect.top <= self.y <= rect.bottom)
+        
+        elif hazard["type"] == "circle":
+            dx = self.x - hazard["x"]
+            dy = self.y - hazard["y"]
+            distance = math.sqrt(dx*dx + dy*dy)
+            return distance < hazard["radius"]
+            
+    def collide_with_cactus(self, cactus):
+        dx = self.x - cactus["x"]
+        dy = self.y - cactus["y"]
+        distance = math.sqrt(dx*dx + dy*dy)
+        return distance < (self.radius + cactus["radius"])
+        
+    def collide_with_rocket(self, rocket):
+        rect = rocket["rect"]
+        closest_x = max(rect.left, min(self.x, rect.right))
+        closest_y = max(rect.top, min(self.y, rect.bottom))
+        
+        dx = self.x - closest_x
+        dy = self.y - closest_y
+        
+        return (dx*dx + dy*dy) < (self.radius * self.radius)
+        
+    def collide_with_tree(self, tree):
+        dx = self.x - tree["x"]
+        dy = self.y - tree["y"]
+        distance = math.sqrt(dx*dx + dy*dy)
+        return distance < (self.radius + tree["radius"])
+
+class Hole:
+    def __init__(self, x, y, radius=20):
+        self.x = x
+        self.y = y
+        self.radius = radius
+    
+    def draw(self, screen, phase):
+        pygame.draw.circle(screen, HOLE_COLOR, (int(self.x), int(self.y)), self.radius)
+        pygame.draw.circle(screen, (50, 50, 50), (int(self.x), int(self.y)), self.radius, 2)
+        
+        # Different flag colors based on phase
+        if phase == 0:  # Grass
+            flag_color = (200, 0, 0)
+        elif phase == 1:  # Desert
+            flag_color = (255, 165, 0)
+        else:  # Space
+            flag_color = (0, 200, 255)
+            
+        # Add a flag to the hole
+        pygame.draw.line(screen, (200, 200, 200), (self.x, self.y), (self.x, self.y - 35), 2)
+        pygame.draw.polygon(screen, flag_color, [(self.x, self.y - 35), 
+                                              (self.x, self.y - 25), 
+                                              (self.x + 12, self.y - 30)])
+
+class Game:
+    def __init__(self):
+        self.phase = 0  # 0=Grass, 1=Desert, 2=Space
+        self.ball = Ball(WIDTH // 2, 150)
+        self.hole = Hole(WIDTH - 100, HEIGHT - 150)
+        self.obstacles = self.create_obstacles()
+        self.hazards = self.create_hazards()
+        self.windmills = self.create_windmills()
+        self.cacti = self.create_cacti()
+        self.rockets = self.create_rockets()
+        self.trees = self.create_trees()
+        self.stars = self.create_stars(50)
+        self.dragging = False
+        self.drag_start = (0, 0)
+        self.drag_end = (0, 0)
+        self.game_over = False
+        self.level_complete = False
+        self.power = 0
+        self.max_power = 20
+        self.order = 1
+    
+    def create_stars(self, count):
+        stars = []
+        for _ in range(count):
+            stars.append((random.randint(0, WIDTH), random.randint(0, HEIGHT), random.randint(1, 3)))
+        return stars
+    
+    def create_windmills(self):
+        windmills = []
+        if self.phase == 0:  # Only in grass phase
+            windmills.append({"x": 300, "y": 500})
+            windmills.append({"x": 700, "y": 400})
+        return windmills
+    
+    def create_cacti(self):
+        cacti = []
+        if self.phase == 1:  # Only in desert phase
+            cacti.append({"x": 250, "y": 400, "radius": 15})
+            cacti.append({"x": 600, "y": 550, "radius": 15})
+            cacti.append({"x": 450, "y": 650, "radius": 15})
+        return cacti
+    
+    def create_rockets(self):
+        rockets = []
+        if self.phase == 2:  # Only in space phase
+            rockets.append({"rect": pygame.Rect(300, 400, 40, 80)})
+            rockets.append({"rect": pygame.Rect(600, 600, 40, 80)})
+        return rockets
+    
+    def create_trees(self):
+        trees = []
+        if self.phase == 0:  # Only in grass phase
+            trees.append({"x": 200, "y": 600, "radius": 25})
+            trees.append({"x": 800, "y": 500, "radius": 25})
+        return trees
+    
+    def create_obstacles(self):
+        obstacles = []
+        
+        if self.phase == 0:  # Grass phase
+            obstacles.append({"type": "rect", "rect": pygame.Rect(200, 400, 120, 30)})
+            obstacles.append({"type": "rect", "rect": pygame.Rect(500, 600, 150, 30)})
+            obstacles.append({"type": "circle", "x": 350, "y": 700, "radius": 40})
+            obstacles.append({"type": "rect", "rect": pygame.Rect(600, 300, 30, 100)})
+            
+        elif self.phase == 1:  # Desert phase
+            obstacles.append({"type": "rect", "rect": pygame.Rect(100, 400, 100, 40)})
+            obstacles.append({"type": "rect", "rect": pygame.Rect(600, 600, 120, 40)})
+            obstacles.append({"type": "circle", "x": 400, "y": 700, "radius": 45})
+            obstacles.append({"type": "circle", "x": 200, "y": 550, "radius": 35})
+            obstacles.append({"type": "rect", "rect": pygame.Rect(700, 350, 40, 120)})
+            
+        else:  # Space phase
+            obstacles.append({"type": "rect", "rect": pygame.Rect(150, 400, 130, 35)})
+            obstacles.append({"type": "rect", "rect": pygame.Rect(500, 550, 140, 35)})
+            obstacles.append({"type": "circle", "x": 300, "y": 700, "radius": 50})
+            obstacles.append({"type": "circle", "x": 650, "y": 450, "radius": 40})
+            obstacles.append({"type": "rect", "rect": pygame.Rect(400, 250, 120, 30)})
+            
+        return obstacles
+    
+    def create_hazards(self):
+        hazards = []
+        
+        if self.phase == 0:  # Grass phase - water hazards
+            hazards.append({"type": "rect", "rect": pygame.Rect(300, 500, 200, 50)})
+            hazards.append({"type": "circle", "x": 650, "y": 700, "radius": 40})
+            hazards.append({"type": "rect", "rect": pygame.Rect(100, 600, 80, 40)})
+            
+        elif self.phase == 1:  # Desert phase - quicksand
+            hazards.append({"type": "rect", "rect": pygame.Rect(400, 600, 150, 60)})
+            hazards.append({"type": "circle", "x": 200, "y": 700, "radius": 45})
+            hazards.append({"type": "rect", "rect": pygame.Rect(700, 500, 100, 50)})
+            
+        else:  # Space phase - asteroid fields
+            hazards.append({"type": "rect", "rect": pygame.Rect(100, 600, 180, 55)})
+            hazards.append({"type": "circle", "x": 500, "y": 400, "radius": 50})
+            hazards.append({"type": "rect", "rect": pygame.Rect(300, 300, 120, 40)})
+            
+        return hazards
+    
+    def next_phase(self):
+        self.phase += 1
+        if self.phase > 2:
+            self.game_over = True
+            return
+            
+        # Reset for new phase
+        self.ball = Ball(WIDTH // 2, 150)
+        self.hole = Hole(WIDTH - 100, HEIGHT - 150)
+        self.obstacles = self.create_obstacles()
+        self.hazards = self.create_hazards()
+        self.windmills = self.create_windmills()
+        self.cacti = self.create_cacti()
+        self.rockets = self.create_rockets()
+        self.trees = self.create_trees()
+        self.dragging = False
+        self.level_complete = False
+        self.power = 0
+        self.order = 1
+    
+    def update(self):
+        if not self.game_over and not self.level_complete:
+            if self.ball.vx == 0 and self.ball.vy == 0:
+                self.ball.hit = False
+                
+            if not self.ball.hit:
+                # Check if ball is in hazard and stopped
+                if self.ball.in_hazard and not self.ball.hit:
+                    # Reset ball to initial position with penalty
+                    self.ball.x = WIDTH // 2
+                    self.ball.y = 150
+                    self.ball.vx = 0
+                    self.ball.vy = 0
+                    self.ball.strokes += 1  # Penalty stroke
+                    self.order += 1
+                
+            else:
+                # Update ball physics
+                self.level_complete = self.ball.update(
+                    self.obstacles, self.hole, self.hazards, self.phase,
+                    self.windmills, self.cacti, self.rockets, self.trees
+                )
+                
+                if self.level_complete:
+                    # Move to next phase after a delay
+                    pygame.time.delay(1000)
+                    self.next_phase()
+    
+    def draw_windmill(self, screen, x, y):
+        # Draw windmill base
+        pygame.draw.rect(screen, WINDMILL_COLOR, (x - 10, y - 60, 20, 60))
+        
+        # Draw windmill blades
+        time = pygame.time.get_ticks() / 20
+        blade_length = 30
+        
+        for i in range(4):
+            angle = time + i * math.pi / 2
+            end_x = x + math.cos(angle) * blade_length
+            end_y = y - 60 + math.sin(angle) * blade_length
+            pygame.draw.line(screen, WINDMILL_COLOR, (x, y - 60), (end_x, end_y), 4)
+    
+    def draw_cactus(self, screen, x, y, radius):
+        # Draw cactus body
+        pygame.draw.rect(screen, CACTUS_COLOR, (x - radius, y - radius*3, radius*2, radius*3))
+        
+        # Draw cactus arms
+        pygame.draw.rect(screen, CACTUS_COLOR, (x - radius, y - radius*3, radius*1.5, radius))
+        pygame.draw.rect(screen, CACTUS_COLOR, (x + radius/2, y - radius*2.5, radius*1.5, radius))
+        
+        # Draw cactus spikes
+        for i in range(3):
+            pygame.draw.line(screen, (0, 60, 0), (x - radius, y - radius*2 + i*10), (x - radius - 5, y - radius*2 + i*10), 2)
+            pygame.draw.line(screen, (0, 60, 0), (x + radius, y - radius*2 + i*10), (x + radius + 5, y - radius*2 + i*10), 2)
+    
+    def draw_rocket(self, screen, rect):
+        # Draw rocket body
+        pygame.draw.rect(screen, ROCKET_COLOR, rect)
+        
+        # Draw rocket tip
+        pygame.draw.polygon(screen, (200, 0, 0), [
+            (rect.x, rect.y),
+            (rect.x + rect.width//2, rect.y - 15),
+            (rect.x + rect.width, rect.y)
+        ])
+        
+        # Draw rocket fins
+        pygame.draw.polygon(screen, (200, 0, 0), [
+            (rect.x, rect.y + rect.height),
+            (rect.x - 10, rect.y + rect.height + 15),
+            (rect.x + 10, rect.y + rect.height + 15)
+        ])
+        pygame.draw.polygon(screen, (200, 0, 0), [
+            (rect.x + rect.width, rect.y + rect.height),
+            (rect.x + rect.width - 10, rect.y + rect.height + 15),
+            (rect.x + rect.width + 10, rect.y + rect.height + 15)
+        ])
+        
+        # Draw rocket fire
+        fire_height = 10 + 5 * math.sin(pygame.time.get_ticks() / 100)
+        pygame.draw.polygon(screen, (255, 165, 0), [
+            (rect.x + rect.width//2 - 5, rect.y + rect.height),
+            (rect.x + rect.width//2 + 5, rect.y + rect.height),
+            (rect.x + rect.width//2, rect.y + rect.height + fire_height)
+        ])
+    
+    def draw_tree(self, screen, x, y, radius):
+        # Draw tree trunk
+        pygame.draw.rect(screen, (101, 67, 33), (x - 5, y - radius*2, 10, radius*2))
+        
+        # Draw tree leaves
+        pygame.draw.circle(screen, TREE_COLOR, (x, y - radius*2), radius)
+        pygame.draw.circle(screen, TREE_COLOR, (x - radius//2, y - radius*2.5), radius*0.8)
+        pygame.draw.circle(screen, TREE_COLOR, (x + radius//2, y - radius*2.5), radius*0.8)
+    
+    def draw(self, screen):
+        # Draw background based on phase
+        if self.phase == 0:  # Grass
+            screen.fill(GRASS_GREEN)
+            # Draw some grass details
+            for i in range(0, WIDTH, 20):
+                for j in range(0, HEIGHT, 20):
+                    pygame.draw.line(screen, (66, 155, 70), (i, j), (i, j-5), 2)
+                    
+        elif self.phase == 1:  # Desert
+            screen.fill(SAND_COLOR)
+            # Draw sand details
+            for _ in range(100):
+                x = random.randint(0, WIDTH)
+                y = random.randint(0, HEIGHT)
+                pygame.draw.circle(screen, (184, 168, 118), (x, y), 2)
+                
+        else:  # Space
+            screen.fill(SPACE_COLOR)
+            # Draw stars
+            for star in self.stars:
+                pygame.draw.circle(screen, STAR_COLOR, (star[0], star[1]), star[2])
+        
+        # Draw hazards based on phase
+        for hazard in self.hazards:
+            if hazard["type"] == "rect":
+                if self.phase == 0:  # Water
+                    pygame.draw.rect(screen, (0, 105, 148), hazard["rect"])
+                    pygame.draw.rect(screen, (0, 85, 128), hazard["rect"], 2)
+                    # Draw water waves
+                    for i in range(0, hazard["rect"].width, 20):
+                        pygame.draw.arc(screen, (200, 230, 255), 
+                                       [hazard["rect"].x + i, hazard["rect"].y, 20, 10],
+                                       0, math.pi, 2)
+                elif self.phase == 1:  # Quicksand
+                    pygame.draw.rect(screen, (160, 140, 100), hazard["rect"])
+                    pygame.draw.rect(screen, (140, 120, 80), hazard["rect"], 2)
+                    # Draw quicksand bubbles
+                    for i in range(0, hazard["rect"].width, 15):
+                        pygame.draw.circle(screen, (170, 150, 110), 
+                                         (hazard["rect"].x + i, hazard["rect"].y + 10), 5)
+                else:  # Asteroid field
+                    pygame.draw.rect(screen, (80, 80, 100), hazard["rect"])
+                    pygame.draw.rect(screen, (60, 60, 80), hazard["rect"], 2)
+                    # Draw asteroids
+                    for i in range(0, hazard["rect"].width, 25):
+                        pygame.draw.circle(screen, (100, 100, 120), 
+                                         (hazard["rect"].x + i, hazard["rect"].y + 15), 7)
+            
+            elif hazard["type"] == "circle":
+                if self.phase == 0:  # Water
+                    pygame.draw.circle(screen, (0, 105, 148), (hazard["x"], hazard["y"]), hazard["radius"])
+                    pygame.draw.circle(screen, (0, 85, 128), (hazard["x"], hazard["y"]), hazard["radius"], 2)
+                elif self.phase == 1:  # Quicksand
+                    pygame.draw.circle(screen, (160, 140, 100), (hazard["x"], hazard["y"]), hazard["radius"])
+                    pygame.draw.circle(screen, (140, 120, 80), (hazard["x"], hazard["y"]), hazard["radius"], 2)
+                else:  # Asteroid field
+                    pygame.draw.circle(screen, (80, 80, 100), (hazard["x"], hazard["y"]), hazard["radius"])
+                    pygame.draw.circle(screen, (60, 60, 80), (hazard["x"], hazard["y"]), hazard["radius"], 2)
+        
+        # Draw obstacles
+        for obstacle in self.obstacles:
+            if obstacle["type"] == "rect":
+                rect = obstacle["rect"]
+                # Pixelated obstacle
+                for i in range(rect.x, rect.x + rect.width, 5):
+                    for j in range(rect.y, rect.y + rect.height, 5):
+                        pygame.draw.rect(screen, (139, 69, 19), (i, j, 4, 4))
+                pygame.draw.rect(screen, (101, 67, 33), rect, 2)
+                
+            elif obstacle["type"] == "circle":
+                # Pixelated circle obstacle
+                for i in range(obstacle["x"] - obstacle["radius"], obstacle["x"] + obstacle["radius"], 5):
+                    for j in range(obstacle["y"] - obstacle["radius"], obstacle["y"] + obstacle["radius"], 5):
+                        dx = i - obstacle["x"]
+                        dy = j - obstacle["y"]
+                        if dx*dx + dy*dy < obstacle["radius"]*obstacle["radius"]:
+                            pygame.draw.rect(screen, (139, 69, 19), (i, j, 4, 4))
+                pygame.draw.circle(screen, (101, 67, 33), (obstacle["x"], obstacle["y"]), obstacle["radius"], 2)
+        
+        # Draw special objects based on phase
+        if self.phase == 0:  # Grass phase
+            for windmill in self.windmills:
+                self.draw_windmill(screen, windmill["x"], windmill["y"])
+            for tree in self.trees:
+                self.draw_tree(screen, tree["x"], tree["y"], tree["radius"])
+                
+        elif self.phase == 1:  # Desert phase
+            for cactus in self.cacti:
+                self.draw_cactus(screen, cactus["x"], cactus["y"], cactus["radius"])
+                
+        else:  # Space phase
+            for rocket in self.rockets:
+                self.draw_rocket(screen, rocket["rect"])
+        
+        # Draw hole
+        self.hole.draw(screen, self.phase)
+        
+        # Draw ball
+        self.ball.draw(screen, self.phase)
+        
+        # Draw drag line when aiming
+        if self.dragging and not self.ball.hit and not self.ball.in_hazard:
+            pygame.draw.line(screen, (255, 0, 0), self.drag_start, self.drag_end, 2)
+            pygame.draw.circle(screen, (255, 0, 0), self.drag_start, 5)
+            
+            # Draw power indicator
+            dx = self.drag_start[0] - self.drag_end[0]
+            dy = self.drag_start[1] - self.drag_end[1]
+            power = min(math.sqrt(dx*dx + dy*dy) / 10, self.max_power)
+            
+            # Draw power bar
+            pygame.draw.rect(screen, (50, 50, 50), (WIDTH - 170, 20, 150, 20))
+            pygame.draw.rect(screen, (255, 0, 0), (WIDTH - 170, 20, (power/self.max_power)*150, 20))
+            pygame.draw.rect(screen, (100, 100, 100), (WIDTH - 170, 20, 150, 20), 2)
+        
+        # Draw UI panel
+        self.draw_ui(screen)
+        
+        # Draw game over message
+        if self.game_over:
+            # Semi-transparent overlay
+            overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 150))
+            screen.blit(overlay, (0, 0))
+            
+            message = "YOU WIN!"
+            text = big_font.render(message, True, (255, 215, 0))
+            screen.blit(text, (WIDTH//2 - text.get_width()//2, HEIGHT//2 - 50))
+            
+            strokes_text = font.render(f"Total Strokes: {self.ball.strokes}", True, TEXT_COLOR)
+            screen.blit(strokes_text, (WIDTH//2 - strokes_text.get_width()//2, HEIGHT//2 + 30))
+            
+            restart_text = font.render("Click anywhere to play again", True, TEXT_COLOR)
+            screen.blit(restart_text, (WIDTH//2 - restart_text.get_width()//2, HEIGHT//2 + 80))
+    
+    def draw_ui(self, screen):
+        # Create a semi-transparent UI panel
+        ui_surface = pygame.Surface((200, 100), pygame.SRCALPHA)
+        ui_surface.fill(UI_BG)
+        pygame.draw.rect(ui_surface, UI_BORDER, ui_surface.get_rect(), 2)
+        screen.blit(ui_surface, (10, 10))
+        
+        # Draw order, power, and phase
+        order_text = font.render(f"Order: {self.order}", True, TEXT_COLOR)
+        screen.blit(order_text, (20, 20))
+        
+        power_text = font.render(f"Power: {int(self.power)}", True, TEXT_COLOR)
+        screen.blit(power_text, (20, 50))
+        
+        phase_names = ["Grass", "Desert", "Space"]
+        phase_text = font.render(f"Phase: {phase_names[self.phase]}", True, TEXT_COLOR)
+        screen.blit(phase_text, (20, 80))
+    
+    def handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.game_over:
+                # Reset game
+                self.__init__()
+            elif not self.ball.hit and not self.ball.in_hazard:
+                self.dragging = True
+                self.drag_start = (self.ball.x, self.ball.y)
+                self.drag_end = event.pos
+        
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            if self.dragging:
+                self.dragging = False
+                self.drag_end = event.pos
+                
+                # Calculate power and angle
+                dx = self.drag_start[0] - self.drag_end[0]
+                dy = self.drag_start[1] - self.drag_end[1]
+                distance = min(math.sqrt(dx*dx + dy*dy), 100)  # Cap the distance
+                angle = math.atan2(dy, dx)
+                
+                # Hit the ball
+                self.ball.hit_ball(distance / 10, angle)
+                self.order += 1
+        
+        elif event.type == pygame.MOUSEMOTION:
+            if self.dragging:
+                self.drag_end = event.pos
+                dx = self.drag_start[0] - self.drag_end[0]
+                dy = self.drag_start[1] - self.drag_end[1]
+                self.power = min(math.sqrt(dx*dx + dy*dy) / 10, self.max_power)
+
+def main():
+    clock = pygame.time.Clock()
+    game = Game()
+    
+    running = True
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            game.handle_event(event)
+        
+        game.update()
+        game.draw(screen)
+        
+        pygame.display.flip()
+        clock.tick(FPS)
+    
+    pygame.quit()
+    sys.exit()
+
+if __name__ == "__main__":
+    main()
+    
